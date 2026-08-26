@@ -1,4 +1,3 @@
-# licensing.py
 """
 Voyager EA Licensing
 ─────────────────────
@@ -15,16 +14,16 @@ Environment variable required:
                            Sent as the X-Admin-Key header on admin requests.
 """
 
-import os
 import secrets
+import os
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import Column, DateTime, Integer, String
-from sqlalchemy.orm import declarative_base, Session
+from sqlalchemy import String, DateTime
+from sqlalchemy.orm import Mapped, mapped_column, Session
 
 from database import Base, get_db
 
@@ -37,18 +36,23 @@ class LicenseStatus(str, Enum):
 class EaLicense(Base):
     __tablename__ = "ea_licenses"
 
-    id = Column(Integer, primary_key=True, index=True)
-    product_id = Column(String, nullable=False, index=True)       # e.g. "voyager-fvg-v1"
-    account_number = Column(String, nullable=False, index=True)   # MT5 login, stored as text
-    broker_server = Column(String, nullable=False)                # e.g. "IFXBrokers-Live01"
-    license_key = Column(String, nullable=False, unique=True, index=True)
-    status = Column(String, nullable=False, default=LicenseStatus.active.value)
-    customer_email = Column(String, nullable=True)
-    notes = Column(String, nullable=True)
-    expires_at = Column(DateTime, nullable=True)   # null = perpetual (your once-off products)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
-                                   onupdate=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    product_id: Mapped[str] = mapped_column(String, index=True)
+    account_number: Mapped[str] = mapped_column(String, index=True)
+    broker_server: Mapped[str] = mapped_column(String)
+    license_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String, default=LicenseStatus.active.value)
+    customer_email: Mapped[Optional[str]] = mapped_column(String, default=None)
+    notes: Mapped[Optional[str]] = mapped_column(String, default=None)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class LicenseCreateRequest(BaseModel):
@@ -57,7 +61,7 @@ class LicenseCreateRequest(BaseModel):
     broker_server: str
     customer_email: Optional[str] = None
     notes: Optional[str] = None
-    valid_days: Optional[int] = None   # None = perpetual; e.g. 30 for a subscription product
+    valid_days: Optional[int] = None
 
 
 class LicenseResponse(BaseModel):
@@ -98,9 +102,6 @@ router = APIRouter(prefix="/licenses", tags=["ea-licensing"])
 
 @router.post("", response_model=LicenseResponse, dependencies=[Depends(require_admin)])
 def create_license(payload: LicenseCreateRequest, db: Session = Depends(get_db)):
-    """Call this once, right after a sale confirms — mirrors how you already
-    manually grant TradingView access today, just for an MT5 account instead
-    of a username."""
     key = "VGR-" + secrets.token_urlsafe(18).replace("_", "").replace("-", "")[:24].upper()
 
     expires_at = None
@@ -125,7 +126,6 @@ def create_license(payload: LicenseCreateRequest, db: Session = Depends(get_db))
 
 @router.patch("/{license_id}/revoke", response_model=LicenseResponse, dependencies=[Depends(require_admin)])
 def revoke_license(license_id: int, db: Session = Depends(get_db)):
-    """Chargebacks, refunds, abuse — same idea as suspending TradingView access."""
     lic = db.query(EaLicense).filter(EaLicense.id == license_id).first()
     if not lic:
         raise HTTPException(status_code=404, detail="License not found")
@@ -151,8 +151,6 @@ def list_licenses(
 
 @router.post("/verify", response_model=VerifyResponse)
 def verify_license(payload: VerifyRequest, db: Session = Depends(get_db)):
-    """Called BY the EA itself — no auth on this one, since the EA can't do
-    anything fancier than send the key. The key is the actual secret."""
     lic = (
         db.query(EaLicense)
         .filter(
